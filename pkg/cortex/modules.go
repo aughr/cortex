@@ -55,6 +55,7 @@ import (
 const (
 	API                      string = "api"
 	Ring                     string = "ring"
+	TestRing                 string = "test-ring"
 	RuntimeConfig            string = "runtime-config"
 	Overrides                string = "overrides"
 	OverridesExporter        string = "overrides-exporter"
@@ -145,6 +146,10 @@ func (t *Cortex) initRing() (serv services.Service, err error) {
 	t.API.RegisterRing(t.Ring)
 
 	return t.Ring, nil
+}
+
+func (t *Cortex) initTestRing() (serv services.Service, err error) {
+	return ring.NewLifecycler(t.Cfg.Ingester.LifecyclerConfig, nil, "ingester", ingester.RingKey, false, util_log.Logger, prometheus.WrapRegistererWithPrefix("cortex_", prometheus.DefaultRegisterer))
 }
 
 func (t *Cortex) initRuntimeConfig() (services.Service, error) {
@@ -845,6 +850,7 @@ func (t *Cortex) setupModuleManager() error {
 	mm.RegisterModule(RuntimeConfig, t.initRuntimeConfig, modules.UserInvisibleModule)
 	mm.RegisterModule(MemberlistKV, t.initMemberlistKV, modules.UserInvisibleModule)
 	mm.RegisterModule(Ring, t.initRing, modules.UserInvisibleModule)
+	mm.RegisterModule(TestRing, t.initTestRing, modules.UserInvisibleModule)
 	mm.RegisterModule(Overrides, t.initOverrides, modules.UserInvisibleModule)
 	mm.RegisterModule(OverridesExporter, t.initOverridesExporter)
 	mm.RegisterModule(Distributor, t.initDistributor)
@@ -879,6 +885,7 @@ func (t *Cortex) setupModuleManager() error {
 		MemberlistKV:             {API},
 		RuntimeConfig:            {API},
 		Ring:                     {API, RuntimeConfig, MemberlistKV},
+		TestRing:                 {Ring},
 		Overrides:                {RuntimeConfig},
 		OverridesExporter:        {RuntimeConfig},
 		Distributor:              {DistributorService, API},
