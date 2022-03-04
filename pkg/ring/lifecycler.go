@@ -27,6 +27,7 @@ type LifecyclerConfig struct {
 
 	// Config for the ingester lifecycle control
 	NumTokens                int           `yaml:"num_tokens"`
+	GenerateTokens           bool          `yaml:"generate_tokens"`
 	HeartbeatPeriod          time.Duration `yaml:"heartbeat_period"`
 	ObservePeriod            time.Duration `yaml:"observe_period"`
 	JoinAfter                time.Duration `yaml:"join_after"`
@@ -63,6 +64,7 @@ func (cfg *LifecyclerConfig) RegisterFlagsWithPrefix(prefix string, f *flag.Flag
 	}
 
 	f.IntVar(&cfg.NumTokens, prefix+"num-tokens", 128, "Number of tokens for each ingester.")
+	f.BoolVar(&cfg.GenerateTokens, prefix+"generate-tokens", false, "Generate tokens based on the instance ID")
 	f.DurationVar(&cfg.HeartbeatPeriod, prefix+"heartbeat-period", 5*time.Second, "Period at which to heartbeat to consul. 0 = disabled.")
 	f.DurationVar(&cfg.JoinAfter, prefix+"join-after", 0*time.Second, "Period to wait for a claim from another member; will join automatically after this.")
 	f.DurationVar(&cfg.ObservePeriod, prefix+"observe-period", 0*time.Second, "Observe tokens after generating to resolve collisions. Useful when using gossiping ring.")
@@ -101,6 +103,8 @@ type Lifecycler struct {
 	RingName string
 	RingKey  string
 	Zone     string
+
+	GeneratedTokens   uint32
 
 	// Whether to flush if transfer fails on shutdown.
 	flushOnShutdown      *atomic.Bool
@@ -157,6 +161,11 @@ func NewLifecycler(cfg LifecyclerConfig, flushTransferer FlushTransferer, ringNa
 		flushTransferer = NewNoopFlushTransferer()
 	}
 
+	var generatedTokens uint32
+	if cfg.GenerateTokens {
+		generatedTokens = uint32(cfg.NumTokens)
+	}
+
 	l := &Lifecycler{
 		cfg:                  cfg,
 		flushTransferer:      flushTransferer,
@@ -165,6 +174,7 @@ func NewLifecycler(cfg LifecyclerConfig, flushTransferer FlushTransferer, ringNa
 		ID:                   cfg.ID,
 		RingName:             ringName,
 		RingKey:              ringKey,
+		GeneratedTokens:      generatedTokens,
 		flushOnShutdown:      atomic.NewBool(flushOnShutdown),
 		unregisterOnShutdown: atomic.NewBool(cfg.UnregisterOnShutdown),
 		Zone:                 zone,
@@ -535,6 +545,8 @@ func (i *Lifecycler) initRing(ctx context.Context) error {
 		if err != nil && !os.IsNotExist(err) {
 			level.Error(i.logger).Log("msg", "error loading tokens from file", "err", err)
 		}
+	} else if i.GeneratedTokens > 0 {
+		tokensFromFile = generateTokensFor(i.ID, i.GeneratedTokens)
 	} else {
 		level.Info(i.logger).Log("msg", "not loading tokens from file, tokens file path is empty")
 	}
@@ -559,14 +571,14 @@ func (i *Lifecycler) initRing(ctx context.Context) error {
 				if len(tokensFromFile) >= i.cfg.NumTokens {
 					i.setState(ACTIVE)
 				}
-				ringDesc.AddIngester(i.ID, i.Addr, i.Zone, tokensFromFile, i.GetState(), registeredAt)
+				ringDesc.AddIngester(i.ID, i.Addr, i.Zone, tokensFromFile, i.GeneratedTokens, i.GetState(), registeredAt)
 				i.setTokens(tokensFromFile)
 				return ringDesc, true, nil
 			}
 
 			// Either we are a new ingester, or consul must have restarted
 			level.Info(i.logger).Log("msg", "instance not found in ring, adding with no tokens", "ring", i.RingName)
-			ringDesc.AddIngester(i.ID, i.Addr, i.Zone, []uint32{}, i.GetState(), registeredAt)
+			ringDesc.AddIngester(i.ID, i.Addr, i.Zone, []uint32{}, i.GeneratedTokens, i.GetState(), registeredAt)
 			return ringDesc, true, nil
 		}
 
@@ -648,7 +660,7 @@ func (i *Lifecycler) verifyTokens(ctx context.Context) bool {
 			ringTokens = append(ringTokens, newTokens...)
 			sort.Sort(ringTokens)
 
-			ringDesc.AddIngester(i.ID, i.Addr, i.Zone, ringTokens, i.GetState(), i.getRegisteredAt())
+			ringDesc.AddIngester(i.ID, i.Addr, i.Zone, ringTokens, i.GeneratedTokens, i.GetState(), i.getRegisteredAt())
 
 			i.setTokens(ringTokens)
 
@@ -710,7 +722,7 @@ func (i *Lifecycler) autoJoin(ctx context.Context, targetState InstanceState) er
 		sort.Sort(myTokens)
 		i.setTokens(myTokens)
 
-		ringDesc.AddIngester(i.ID, i.Addr, i.Zone, i.getTokens(), i.GetState(), i.getRegisteredAt())
+		ringDesc.AddIngester(i.ID, i.Addr, i.Zone, i.getTokens(), i.GeneratedTokens, i.GetState(), i.getRegisteredAt())
 
 		return ringDesc, true, nil
 	})
@@ -739,7 +751,7 @@ func (i *Lifecycler) updateConsul(ctx context.Context) error {
 		if !ok {
 			// consul must have restarted
 			level.Info(i.logger).Log("msg", "found empty ring, inserting tokens", "ring", i.RingName)
-			ringDesc.AddIngester(i.ID, i.Addr, i.Zone, i.getTokens(), i.GetState(), i.getRegisteredAt())
+			ringDesc.AddIngester(i.ID, i.Addr, i.Zone, i.getTokens(), i.GeneratedTokens, i.GetState(), i.getRegisteredAt())
 		} else {
 			instanceDesc.Timestamp = time.Now().Unix()
 			instanceDesc.State = i.GetState()

@@ -2,6 +2,7 @@ package ring
 
 import (
 	"container/heap"
+	"encoding/binary"
 	"fmt"
 	"sort"
 	"sync"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/cortexproject/cortex/pkg/ring/kv/codec"
 	"github.com/cortexproject/cortex/pkg/ring/kv/memberlist"
+
+	"github.com/twmb/murmur3"
 )
 
 // ByAddr is a sortable list of InstanceDesc.
@@ -39,7 +42,7 @@ func NewDesc() *Desc {
 
 // AddIngester adds the given ingester to the ring. Ingester will only use supplied tokens,
 // any other tokens are removed.
-func (d *Desc) AddIngester(id, addr, zone string, tokens []uint32, state InstanceState, registeredAt time.Time) InstanceDesc {
+func (d *Desc) AddIngester(id, addr, zone string, tokens []uint32, generatedTokens uint32, state InstanceState, registeredAt time.Time) InstanceDesc {
 	if d.Ingesters == nil {
 		d.Ingesters = map[string]InstanceDesc{}
 	}
@@ -55,6 +58,7 @@ func (d *Desc) AddIngester(id, addr, zone string, tokens []uint32, state Instanc
 		RegisteredTimestamp: registeredTimestamp,
 		State:               state,
 		Tokens:              tokens,
+		GeneratedTokens:     generatedTokens,
 		Zone:                zone,
 	}
 
@@ -458,7 +462,11 @@ func (d *Desc) getTokensInfo() map[uint32]instanceInfo {
 // GetTokens returns sorted list of tokens owned by all instances within the ring.
 func (d *Desc) GetTokens() []uint32 {
 	instances := make([][]uint32, 0, len(d.Ingesters))
-	for _, instance := range d.Ingesters {
+	for id, instance := range d.Ingesters {
+		if instance.GeneratedTokens > 0 && len(instance.Tokens) == 0 {
+			instance.Tokens = generateTokensFor(id, instance.GeneratedTokens)
+		}
+
 		// Tokens may not be sorted for an older version which, so we enforce sorting here.
 		tokens := instance.Tokens
 		if !sort.IsSorted(Tokens(tokens)) {
@@ -475,7 +483,11 @@ func (d *Desc) GetTokens() []uint32 {
 // are guaranteed to be sorted.
 func (d *Desc) getTokensByZone() map[string][]uint32 {
 	zones := map[string][][]uint32{}
-	for _, instance := range d.Ingesters {
+	for id, instance := range d.Ingesters {
+		if instance.GeneratedTokens > 0 && len(instance.Tokens) == 0 {
+			instance.Tokens = generateTokensFor(id, instance.GeneratedTokens)
+		}
+
 		// Tokens may not be sorted for an older version which, so we enforce sorting here.
 		tokens := instance.Tokens
 		if !sort.IsSorted(Tokens(tokens)) {
@@ -487,6 +499,21 @@ func (d *Desc) getTokensByZone() map[string][]uint32 {
 
 	// Merge tokens per zone.
 	return MergeTokensByZone(zones)
+}
+
+func generateTokensFor(id string, n uint32) []uint32 {
+	h := murmur3.New32()
+	_, _ = h.Write([]byte(id)) // hash writes never error
+
+	b := make([]byte, 4)
+	tokens := make([]uint32, n)
+	for i := uint32(0); i < n; i++ {
+		binary.LittleEndian.PutUint32(b, i)
+		_, _ = h.Write(b) // hash writes never error
+		tokens[i] = h.Sum32()
+	}
+	sort.Sort(Tokens(tokens))
+	return tokens
 }
 
 type CompareResult int
@@ -541,9 +568,15 @@ func (d *Desc) RingCompare(o *Desc) CompareResult {
 			return Different
 		}
 
-		for ix, t := range ing.Tokens {
-			if oing.Tokens[ix] != t {
-				return Different
+		if ing.GeneratedTokens != oing.GeneratedTokens {
+			return Different
+		}
+
+		if ing.GeneratedTokens == 0 {
+			for ix, t := range ing.Tokens {
+				if oing.Tokens[ix] != t {
+					return Different
+				}
 			}
 		}
 

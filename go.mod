@@ -56,6 +56,7 @@ require (
 	github.com/spf13/afero v1.6.0
 	github.com/stretchr/testify v1.7.0
 	github.com/thanos-io/thanos v0.22.0
+	github.com/twmb/murmur3 v1.1.6
 	github.com/uber/jaeger-client-go v2.29.1+incompatible
 	github.com/weaveworks/common v0.0.0-20210913144402-035033b78a78
 	go.etcd.io/bbolt v1.3.6
@@ -98,3 +99,6 @@ replace github.com/thanos-io/thanos v0.22.0 => github.com/thanos-io/thanos v0.19
 // Pin aws-sdk to version prior to go-kit update, to reduce the bulk of change.
 // Un-pin once Cortex 1.11 is released.
 replace github.com/aws/aws-sdk-go => github.com/aws/aws-sdk-go v1.40.37
+
+// This commit is now only accessible via SHA if you're not using the Go modules proxy.
+replace github.com/efficientgo/tools/core => github.com/efficientgo/tools/core v0.0.0-20210829154005-c7bad8450208
