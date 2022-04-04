@@ -17,6 +17,10 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/thanos-io/thanos/pkg/objstore"
+
+	"github.com/cortexproject/cortex/pkg/ruler/rulestore/bucketclient"
+
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/gorilla/mux"
@@ -37,7 +41,6 @@ import (
 	"google.golang.org/grpc"
 	"gopkg.in/yaml.v2"
 
-	"github.com/cortexproject/cortex/pkg/chunk"
 	"github.com/cortexproject/cortex/pkg/chunk/purger"
 	"github.com/cortexproject/cortex/pkg/cortexpb"
 	"github.com/cortexproject/cortex/pkg/querier"
@@ -46,7 +49,6 @@ import (
 	"github.com/cortexproject/cortex/pkg/ring/kv/consul"
 	"github.com/cortexproject/cortex/pkg/ruler/rulespb"
 	"github.com/cortexproject/cortex/pkg/ruler/rulestore"
-	"github.com/cortexproject/cortex/pkg/ruler/rulestore/objectclient"
 	"github.com/cortexproject/cortex/pkg/tenant"
 	"github.com/cortexproject/cortex/pkg/util"
 	"github.com/cortexproject/cortex/pkg/util/flagext"
@@ -54,7 +56,7 @@ import (
 	"github.com/cortexproject/cortex/pkg/util/validation"
 )
 
-func defaultRulerConfig(t testing.TB, store rulestore.RuleStore) (Config, func()) {
+func defaultRulerConfig(t testing.TB) (Config, func()) {
 	t.Helper()
 
 	// Create a new temporary directory for the rules, so that
@@ -68,7 +70,6 @@ func defaultRulerConfig(t testing.TB, store rulestore.RuleStore) (Config, func()
 	cfg := Config{}
 	flagext.DefaultValues(&cfg)
 	cfg.RulePath = rulesDir
-	cfg.StoreConfig.mock = store
 	cfg.Ring.KVStore.Mock = consul
 	cfg.Ring.NumTokens = 1
 	cfg.Ring.ListenPort = 0
@@ -223,10 +224,8 @@ func newMockClientsPool(cfg Config, logger log.Logger, reg prometheus.Registerer
 	}
 }
 
-func buildRuler(t *testing.T, rulerConfig Config, querierTestConfig *querier.TestConfig, rulerAddrMap map[string]*Ruler) (*Ruler, func()) {
+func buildRuler(t *testing.T, rulerConfig Config, querierTestConfig *querier.TestConfig, store rulestore.RuleStore, rulerAddrMap map[string]*Ruler) (*Ruler, func()) {
 	engine, queryable, pusher, logger, overrides, reg, cleanup := testSetup(t, querierTestConfig)
-	storage, err := NewLegacyRuleStore(rulerConfig.StoreConfig, promRules.FileLoader{}, log.NewNopLogger())
-	require.NoError(t, err)
 
 	managerFactory := DefaultTenantManagerFactory(rulerConfig, pusher, queryable, engine, overrides, reg)
 	manager, err := NewDefaultMultiTenantManager(rulerConfig, managerFactory, reg, log.NewNopLogger())
@@ -237,7 +236,7 @@ func buildRuler(t *testing.T, rulerConfig Config, querierTestConfig *querier.Tes
 		manager,
 		reg,
 		logger,
-		storage,
+		store,
 		overrides,
 		newMockClientsPool(rulerConfig, logger, reg, rulerAddrMap),
 	)
@@ -245,8 +244,8 @@ func buildRuler(t *testing.T, rulerConfig Config, querierTestConfig *querier.Tes
 	return ruler, cleanup
 }
 
-func newTestRuler(t *testing.T, rulerConfig Config, querierTestConfig *querier.TestConfig) (*Ruler, func()) {
-	ruler, cleanup := buildRuler(t, rulerConfig, querierTestConfig, nil)
+func newTestRuler(t *testing.T, rulerConfig Config, store rulestore.RuleStore, querierTestConfig *querier.TestConfig) (*Ruler, func()) {
+	ruler, cleanup := buildRuler(t, rulerConfig, querierTestConfig, store, nil)
 	require.NoError(t, services.StartAndAwaitRunning(context.Background(), ruler))
 
 	// Ensure all rules are loaded before usage
@@ -270,8 +269,7 @@ func TestNotifierSendsUserIDHeader(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	// We create an empty rule store so that the ruler will not load any rule from it.
-	cfg, cleanup := defaultRulerConfig(t, newMockRuleStore(nil))
+	cfg, cleanup := defaultRulerConfig(t)
 	defer cleanup()
 
 	cfg.AlertmanagerURL = ts.URL
@@ -303,10 +301,11 @@ func TestNotifierSendsUserIDHeader(t *testing.T) {
 }
 
 func TestRuler_Rules(t *testing.T) {
-	cfg, cleanup := defaultRulerConfig(t, newMockRuleStore(mockRules))
+	store := newMockRuleStore(mockRules)
+	cfg, cleanup := defaultRulerConfig(t)
 	defer cleanup()
 
-	r, rcleanup := newTestRuler(t, cfg, nil)
+	r, rcleanup := newTestRuler(t, cfg, store, nil)
 	defer rcleanup()
 	defer services.StopAndAwaitTerminated(context.Background(), r) //nolint:errcheck
 
@@ -404,7 +403,8 @@ func TestGetRules(t *testing.T) {
 			rulerAddrMap := map[string]*Ruler{}
 
 			createRuler := func(id string) *Ruler {
-				cfg, cleanUp := defaultRulerConfig(t, newMockRuleStore(allRulesByUser))
+				store := newMockRuleStore(allRulesByUser)
+				cfg, cleanUp := defaultRulerConfig(t)
 				t.Cleanup(cleanUp)
 
 				cfg.ShardingStrategy = tc.shardingStrategy
@@ -418,7 +418,7 @@ func TestGetRules(t *testing.T) {
 					},
 				}
 
-				r, cleanUp := buildRuler(t, cfg, nil, rulerAddrMap)
+				r, cleanUp := buildRuler(t, cfg, nil, store, rulerAddrMap)
 				r.limits = ruleLimits{evalDelay: 0, tenantShard: tc.shuffleShardSize}
 				t.Cleanup(cleanUp)
 				rulerAddrMap[id] = r
@@ -903,8 +903,8 @@ func TestSharding(t *testing.T) {
 			t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
 			setupRuler := func(id string, host string, port int, forceRing *ring.Ring) *Ruler {
+				store := newMockRuleStore(allRules)
 				cfg := Config{
-					StoreConfig:      RuleStoreConfig{mock: newMockRuleStore(allRules)},
 					EnableSharding:   tc.sharding,
 					ShardingStrategy: tc.shardingStrategy,
 					Ring: RingConfig{
@@ -921,7 +921,7 @@ func TestSharding(t *testing.T) {
 					DisabledTenants:  tc.disabledUsers,
 				}
 
-				r, cleanup := buildRuler(t, cfg, nil, nil)
+				r, cleanup := buildRuler(t, cfg, nil, store, nil)
 				r.limits = ruleLimits{evalDelay: 0, tenantShard: tc.shuffleShardSize}
 				t.Cleanup(cleanup)
 
@@ -1018,7 +1018,7 @@ func TestDeleteTenantRuleGroups(t *testing.T) {
 	}
 
 	obj, rs := setupRuleGroupsStore(t, ruleGroups)
-	require.Equal(t, 3, obj.GetObjectCount())
+	require.Equal(t, 3, len(obj.Objects()))
 
 	api, err := NewRuler(Config{}, nil, nil, log.NewNopLogger(), rs, nil)
 	require.NoError(t, err)
@@ -1033,7 +1033,7 @@ func TestDeleteTenantRuleGroups(t *testing.T) {
 
 	{
 		callDeleteTenantAPI(t, api, "user-with-no-rule-groups")
-		require.Equal(t, 3, obj.GetObjectCount())
+		require.Equal(t, 3, len(obj.Objects()))
 
 		verifyExpectedDeletedRuleGroupsForUser(t, api, "user-with-no-rule-groups", true) // Has no rule groups
 		verifyExpectedDeletedRuleGroupsForUser(t, api, "userA", false)
@@ -1042,7 +1042,7 @@ func TestDeleteTenantRuleGroups(t *testing.T) {
 
 	{
 		callDeleteTenantAPI(t, api, "userA")
-		require.Equal(t, 2, obj.GetObjectCount())
+		require.Equal(t, 2, len(obj.Objects()))
 
 		verifyExpectedDeletedRuleGroupsForUser(t, api, "user-with-no-rule-groups", true) // Has no rule groups
 		verifyExpectedDeletedRuleGroupsForUser(t, api, "userA", true)                    // Just deleted.
@@ -1052,7 +1052,7 @@ func TestDeleteTenantRuleGroups(t *testing.T) {
 	// Deleting same user again works fine and reports no problems.
 	{
 		callDeleteTenantAPI(t, api, "userA")
-		require.Equal(t, 2, obj.GetObjectCount())
+		require.Equal(t, 2, len(obj.Objects()))
 
 		verifyExpectedDeletedRuleGroupsForUser(t, api, "user-with-no-rule-groups", true) // Has no rule groups
 		verifyExpectedDeletedRuleGroupsForUser(t, api, "userA", true)                    // Already deleted before.
@@ -1061,7 +1061,7 @@ func TestDeleteTenantRuleGroups(t *testing.T) {
 
 	{
 		callDeleteTenantAPI(t, api, "userB")
-		require.Equal(t, 0, obj.GetObjectCount())
+		require.Equal(t, 0, len(obj.Objects()))
 
 		verifyExpectedDeletedRuleGroupsForUser(t, api, "user-with-no-rule-groups", true) // Has no rule groups
 		verifyExpectedDeletedRuleGroupsForUser(t, api, "userA", true)                    // Deleted previously
@@ -1100,9 +1100,9 @@ func verifyExpectedDeletedRuleGroupsForUser(t *testing.T, r *Ruler, userID strin
 	}
 }
 
-func setupRuleGroupsStore(t *testing.T, ruleGroups []ruleGroupKey) (*chunk.MockStorage, rulestore.RuleStore) {
-	obj := chunk.NewMockStorage()
-	rs := objectclient.NewRuleStore(obj, 5, log.NewNopLogger())
+func setupRuleGroupsStore(t *testing.T, ruleGroups []ruleGroupKey) (*objstore.InMemBucket, rulestore.RuleStore) {
+	bucketClient := objstore.NewInMemBucket()
+	rs := bucketclient.NewBucketRuleStore(bucketClient, nil, log.NewNopLogger())
 
 	// "upload" rule groups
 	for _, key := range ruleGroups {
@@ -1110,7 +1110,7 @@ func setupRuleGroupsStore(t *testing.T, ruleGroups []ruleGroupKey) (*chunk.MockS
 		require.NoError(t, rs.SetRuleGroup(context.Background(), key.user, key.namespace, desc))
 	}
 
-	return obj, rs
+	return bucketClient, rs
 }
 
 type ruleGroupKey struct {
@@ -1118,10 +1118,11 @@ type ruleGroupKey struct {
 }
 
 func TestRuler_ListAllRules(t *testing.T) {
-	cfg, cleanup := defaultRulerConfig(t, newMockRuleStore(mockRules))
+	store := newMockRuleStore(mockRules)
+	cfg, cleanup := defaultRulerConfig(t)
 	defer cleanup()
 
-	r, rcleanup := newTestRuler(t, cfg, nil)
+	r, rcleanup := newTestRuler(t, cfg, store, nil)
 	defer rcleanup()
 	defer services.StopAndAwaitTerminated(context.Background(), r) //nolint:errcheck
 
@@ -1245,7 +1246,8 @@ func TestRecoverAlertsPostOutage(t *testing.T) {
 	}
 
 	// NEXT, set up ruler config with outage tolerance = 1hr
-	rulerCfg, cleanup := defaultRulerConfig(t, newMockRuleStore(mockRules))
+	store := newMockRuleStore(mockRules)
+	rulerCfg, cleanup := defaultRulerConfig(t)
 	rulerCfg.OutageTolerance, _ = time.ParseDuration("1h")
 	defer cleanup()
 
@@ -1279,7 +1281,7 @@ func TestRecoverAlertsPostOutage(t *testing.T) {
 	}
 
 	// create a ruler but don't start it. instead, we'll evaluate the rule groups manually.
-	r, rcleanup := buildRuler(t, rulerCfg, &querier.TestConfig{Cfg: querierConfig, Distributor: d, Stores: queryables}, nil)
+	r, rcleanup := buildRuler(t, rulerCfg, &querier.TestConfig{Cfg: querierConfig, Distributor: d, Stores: queryables}, store, nil)
 	r.syncRules(context.Background(), rulerSyncReasonInitial)
 	defer rcleanup()
 

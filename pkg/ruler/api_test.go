@@ -22,10 +22,11 @@ import (
 )
 
 func TestRuler_rules(t *testing.T) {
-	cfg, cleanup := defaultRulerConfig(t, newMockRuleStore(mockRules))
+	store := newMockRuleStore(mockRules)
+	cfg, cleanup := defaultRulerConfig(t)
 	defer cleanup()
 
-	r, rcleanup := newTestRuler(t, cfg, nil)
+	r, rcleanup := newTestRuler(t, cfg, store, nil)
 	defer rcleanup()
 	defer services.StopAndAwaitTerminated(context.Background(), r) //nolint:errcheck
 
@@ -79,10 +80,11 @@ func TestRuler_rules(t *testing.T) {
 }
 
 func TestRuler_rules_special_characters(t *testing.T) {
-	cfg, cleanup := defaultRulerConfig(t, newMockRuleStore(mockSpecialCharRules))
+	store := newMockRuleStore(mockSpecialCharRules)
+	cfg, cleanup := defaultRulerConfig(t)
 	defer cleanup()
 
-	r, rcleanup := newTestRuler(t, cfg, nil)
+	r, rcleanup := newTestRuler(t, cfg, store, nil)
 	defer rcleanup()
 	defer services.StopAndAwaitTerminated(context.Background(), r) //nolint:errcheck
 
@@ -136,10 +138,11 @@ func TestRuler_rules_special_characters(t *testing.T) {
 }
 
 func TestRuler_alerts(t *testing.T) {
-	cfg, cleanup := defaultRulerConfig(t, newMockRuleStore(mockRules))
+	store := newMockRuleStore(mockRules)
+	cfg, cleanup := defaultRulerConfig(t)
 	defer cleanup()
 
-	r, rcleanup := newTestRuler(t, cfg, nil)
+	r, rcleanup := newTestRuler(t, cfg, store, nil)
 	defer rcleanup()
 	defer r.StopAsync()
 
@@ -172,10 +175,11 @@ func TestRuler_alerts(t *testing.T) {
 }
 
 func TestRuler_Create(t *testing.T) {
-	cfg, cleanup := defaultRulerConfig(t, newMockRuleStore(make(map[string]rulespb.RuleGroupList)))
+	store := newMockRuleStore(make(map[string]rulespb.RuleGroupList))
+	cfg, cleanup := defaultRulerConfig(t)
 	defer cleanup()
 
-	r, rcleanup := newTestRuler(t, cfg, nil)
+	r, rcleanup := newTestRuler(t, cfg, store, nil)
 	defer rcleanup()
 	defer services.StopAndAwaitTerminated(context.Background(), r) //nolint:errcheck
 
@@ -263,10 +267,11 @@ rules:
 }
 
 func TestRuler_DeleteNamespace(t *testing.T) {
-	cfg, cleanup := defaultRulerConfig(t, newMockRuleStore(mockRulesNamespaces))
+	store := newMockRuleStore(mockRulesNamespaces)
+	cfg, cleanup := defaultRulerConfig(t)
 	defer cleanup()
 
-	r, rcleanup := newTestRuler(t, cfg, nil)
+	r, rcleanup := newTestRuler(t, cfg, store, nil)
 	defer rcleanup()
 	defer services.StopAndAwaitTerminated(context.Background(), r) //nolint:errcheck
 
@@ -302,10 +307,11 @@ func TestRuler_DeleteNamespace(t *testing.T) {
 }
 
 func TestRuler_LimitsPerGroup(t *testing.T) {
-	cfg, cleanup := defaultRulerConfig(t, newMockRuleStore(make(map[string]rulespb.RuleGroupList)))
+	store := newMockRuleStore(make(map[string]rulespb.RuleGroupList))
+	cfg, cleanup := defaultRulerConfig(t)
 	defer cleanup()
 
-	r, rcleanup := newTestRuler(t, cfg, nil)
+	r, rcleanup := newTestRuler(t, cfg, store, nil)
 	defer rcleanup()
 	defer services.StopAndAwaitTerminated(context.Background(), r) //nolint:errcheck
 
@@ -357,10 +363,11 @@ rules:
 }
 
 func TestRuler_RulerGroupLimits(t *testing.T) {
-	cfg, cleanup := defaultRulerConfig(t, newMockRuleStore(make(map[string]rulespb.RuleGroupList)))
+	store := newMockRuleStore(make(map[string]rulespb.RuleGroupList))
+	cfg, cleanup := defaultRulerConfig(t)
 	defer cleanup()
 
-	r, rcleanup := newTestRuler(t, cfg, nil)
+	r, rcleanup := newTestRuler(t, cfg, store, nil)
 	defer rcleanup()
 	defer services.StopAndAwaitTerminated(context.Background(), r) //nolint:errcheck
 
