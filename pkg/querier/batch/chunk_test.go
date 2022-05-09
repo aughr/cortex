@@ -60,7 +60,7 @@ func mkChunk(t require.TestingT, from model.Time, points int, enc promchunk.Enco
 		ts = ts.Add(step)
 	}
 	ts = ts.Add(-step) // undo the add that we did just before exiting the loop
-	return chunk.NewChunk(userID, fp, metric, pc, from, ts)
+	return chunk.NewChunk(metric, pc, from, ts)
 }
 
 func mkGenericChunk(t require.TestingT, from model.Time, points int, enc promchunk.Encoding) GenericChunk {
